@@ -1,0 +1,6 @@
+{
+  "name": "Expense Tracker",
+  "description": "A clean, modern, and professional Expense Tracker to manage, categorize, and analyze your daily finances.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

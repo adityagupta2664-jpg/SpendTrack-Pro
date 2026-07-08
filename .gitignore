@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# AI Studio Auto-generated files (Not used by Supabase)
+firebase-applet-config.json
+firebase-blueprint.json
+firestore.rules
