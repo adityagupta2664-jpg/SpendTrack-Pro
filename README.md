@@ -23,7 +23,7 @@ To run SpendTrack Pro locally, follow these simple steps:
 ### 1. Clone the Repository & Install Dependencies
 ```bash
 # Clone your repository
-git clone <your-github-repo-url>
+git clone https://github.com/adityagupta2664-jpg/SpendTrack-Pro
 cd spendtrack-pro
 
 # Install dependencies
