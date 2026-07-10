@@ -14,12 +14,12 @@ const supabaseUrl = supabaseUrlRaw && !supabaseUrlRaw.startsWith('http') && /^[a
   : supabaseUrlRaw;
 
 // Check if credentials are valid
-const isRealSupabaseConfigured = 
-  supabaseUrl && 
+export const isRealSupabaseConfigured = 
+  !!(supabaseUrl && 
   supabaseAnonKey && 
   supabaseUrl !== 'https://your-supabase-project.supabase.co' && 
   supabaseAnonKey !== 'your-anon-key-here' &&
-  supabaseUrl.startsWith('http');
+  supabaseUrl.startsWith('http'));
 
 // Helper to manage high-fidelity mock local storage database
 const getLocalData = (key: string, defaultValue: any) => {
@@ -36,17 +36,16 @@ class LocalSupabaseAuth {
   private listeners: Array<(event: string, session: any) => void> = [];
 
   constructor() {
-    // Check if we have an active simulated session
-    const activeUser = getLocalData('sb-simulated-user', null);
-    if (activeUser) {
-      setTimeout(() => this.trigger('SIGNED_IN', { user: activeUser }), 50);
-    }
+    // No redundant trigger on startup is needed, since onAuthStateChange will trigger with INITIAL_SESSION
   }
 
   onAuthStateChange(callback: (event: string, session: any) => void) {
     this.listeners.push(callback);
     const activeUser = getLocalData('sb-simulated-user', null);
-    callback('INITIAL_SESSION', activeUser ? { user: activeUser } : null);
+    // Real Supabase callbacks run asynchronously to let app subscription complete cleanly
+    setTimeout(() => {
+      callback('INITIAL_SESSION', activeUser ? { user: activeUser } : null);
+    }, 0);
     return {
       data: {
         subscription: {
@@ -59,7 +58,10 @@ class LocalSupabaseAuth {
   }
 
   private trigger(event: string, session: any) {
-    this.listeners.forEach(l => l(event, session));
+    // Real Supabase events are triggered asynchronously on next event-loop tick
+    setTimeout(() => {
+      this.listeners.forEach(l => l(event, session));
+    }, 0);
   }
 
   async signUp({ email, password, options }: any) {
@@ -138,6 +140,14 @@ class LocalSupabaseAuth {
 class LocalSupabaseQueryBuilder {
   private tableName: string;
   private userId: string | null = null;
+  private filters: Array<{ field: string; value: any }> = [];
+  private orderField: string | null = null;
+  private orderAscending: boolean = true;
+  private updateData: any = null;
+  private isInsert: boolean = false;
+  private isUpdate: boolean = false;
+  private isDelete: boolean = false;
+  private insertData: any = null;
 
   constructor(tableName: string) {
     this.tableName = tableName;
@@ -158,86 +168,112 @@ class LocalSupabaseQueryBuilder {
   }
 
   select(columns: string = '*') {
-    return {
-      eq: (field: string, value: any) => {
-        return {
-          order: (orderField: string, { ascending = true } = {}) => {
-            let result = this.getAllRows().filter(row => row[field] === value);
-            result.sort((a, b) => {
-              const valA = a[orderField];
-              const valB = b[orderField];
-              if (valA < valB) return ascending ? -1 : 1;
-              if (valA > valB) return ascending ? 1 : -1;
-              return 0;
-            });
-            return Promise.resolve({ data: result, error: null });
-          },
-          then: (resolve: any) => {
-            const result = this.getAllRows().filter(row => row[field] === value);
-            resolve({ data: result, error: null });
-          }
-        };
-      },
-      then: (resolve: any) => {
-        resolve({ data: this.getAllRows(), error: null });
-      }
-    };
+    this.filters = [];
+    return this;
   }
 
   insert(data: any) {
-    const rows = this.getAllRows();
-    const records = Array.isArray(data) ? data : [data];
-    const created: any[] = [];
-
-    records.forEach(item => {
-      const newRecord = {
-        ...item,
-        created_at: item.created_at || new Date().toISOString()
-      };
-      rows.push(newRecord);
-      created.push(newRecord);
-    });
-
-    this.saveAllRows(rows);
-    return {
-      select: () => ({
-        single: () => Promise.resolve({ data: created[0], error: null }),
-        then: (resolve: any) => resolve({ data: created, error: null })
-      }),
-      then: (resolve: any) => resolve({ data: created, error: null })
-    };
+    this.isInsert = true;
+    this.insertData = data;
+    return this;
   }
 
   update(data: any) {
-    return {
-      eq: (field: string, value: any) => {
-        const rows = this.getAllRows();
-        let updatedCount = 0;
-        const updatedRows = rows.map(row => {
-          if (row[field] === value) {
-            updatedCount++;
-            return { ...row, ...data };
-          }
-          return row;
-        });
-        this.saveAllRows(updatedRows);
-        return Promise.resolve({ data: updatedRows.filter(row => row[field] === value), error: null });
-      }
-    };
+    this.isUpdate = true;
+    this.updateData = data;
+    this.filters = [];
+    return this;
   }
 
   delete() {
+    this.isDelete = true;
+    this.filters = [];
+    return this;
+  }
+
+  eq(field: string, value: any) {
+    this.filters.push({ field, value });
+    return this;
+  }
+
+  order(orderField: string, { ascending = true } = {}) {
+    this.orderField = orderField;
+    this.orderAscending = ascending;
+    return this;
+  }
+
+  single() {
     return {
-      eq: (field: string, value: any) => {
-        const rows = this.getAllRows();
-        const remaining = rows.filter(row => row[field] !== value);
-        this.saveAllRows(remaining);
-        return Promise.resolve({ error: null });
+      then: (resolve: any, reject: any) => {
+        this.execute().then(res => {
+          if (res.error) {
+            resolve({ data: null, error: res.error });
+          } else {
+            resolve({ data: res.data ? res.data[0] : null, error: null });
+          }
+        }, reject);
       }
     };
   }
 
-  upsert(data: any) {
+  then(resolve: any, reject: any) {
+    return this.execute().then(resolve, reject);
+  }
+
+  private async execute() {
+    let rows = this.getAllRows();
+
+    if (this.isInsert) {
+      const records = Array.isArray(this.insertData) ? this.insertData : [this.insertData];
+      const created: any[] = [];
+      records.forEach(item => {
+        const newRecord = {
+          ...item,
+          created_at: item.created_at || new Date().toISOString()
+        };
+        rows.push(newRecord);
+        created.push(newRecord);
+      });
+      this.saveAllRows(rows);
+      return { data: created, error: null };
+    }
+
+    if (this.isUpdate) {
+      const updatedRows = rows.map(row => {
+        const matches = this.filters.every(f => row[f.field] === f.value);
+        if (matches) {
+          return { ...row, ...this.updateData };
+        }
+        return row;
+      });
+      this.saveAllRows(updatedRows);
+      const matches = updatedRows.filter(row => this.filters.every(f => row[f.field] === f.value));
+      return { data: matches, error: null };
+    }
+
+    if (this.isDelete) {
+      const remaining = rows.filter(row => !this.filters.every(f => row[f.field] === f.value));
+      this.saveAllRows(remaining);
+      return { error: null };
+    }
+
+    // Default SELECT
+    let result = rows.filter(row => this.filters.every(f => row[f.field] === f.value));
+
+    if (this.orderField) {
+      result.sort((a, b) => {
+        const valA = a[this.orderField!];
+        const valB = b[this.orderField!];
+        if (valA < valB) return this.orderAscending ? -1 : 1;
+        if (valA > valB) return this.orderAscending ? 1 : -1;
+        return 0;
+      });
+    }
+
+    return { data: result, error: null };
+  }
+
+  async upsert(data: any) {
     const rows = this.getAllRows();
     const records = Array.isArray(data) ? data : [data];
     
@@ -251,7 +287,7 @@ class LocalSupabaseQueryBuilder {
     });
 
     this.saveAllRows(rows);
-    return Promise.resolve({ data: records, error: null });
+    return { data: records, error: null };
   }
 }
 
@@ -262,8 +298,8 @@ const isDev = !!(import.meta as any).env.DEV;
 const useDemoMode = typeof window !== 'undefined' && localStorage.getItem('sb-use-demo-mode') === 'true';
 
 export const isProdWithInvalidConfig = !!(isProd && !isRealSupabaseConfigured && !useDemoMode);
-export const isDevSandbox = !!((isDev || useDemoMode) && !isRealSupabaseConfigured);
-export const isSupabaseLive = !!isRealSupabaseConfigured;
+export const isDevSandbox = !!((isDev || useDemoMode) && (!isRealSupabaseConfigured || useDemoMode));
+export const isSupabaseLive = !!(isRealSupabaseConfigured && !useDemoMode);
 
 const rejectConfigError = () => {
   return Promise.reject(new Error("Application configuration error. The cloud backend is not configured correctly."));
