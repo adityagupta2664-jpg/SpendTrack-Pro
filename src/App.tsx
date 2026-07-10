@@ -207,50 +207,53 @@ export default function App() {
 
   // 1. Listen for Supabase Auth changes on startup
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const user = session?.user;
       if (user) {
-        try {
-          // Fetch profile details from Supabase
-          const profile = await getUserProfile(user.id);
-          if (profile) {
-            setCurrentUser({
-              id: user.id,
-              email: user.email || '',
-              name: profile.name,
-              avatar: profile.avatar,
-            });
-            setCurrencyCode(profile.currencyCode || 'INR');
-            setThemePreference(profile.themePreference || 'light');
-          } else {
-            setCurrentUser({
-              id: user.id,
-              email: user.email || '',
-              name: user.email?.split('@')[0] || 'User',
-              avatar: '🦁',
-            });
+        (async () => {
+          try {
+            // Fetch profile details from Supabase
+            const profile = await getUserProfile(user.id);
+            if (profile) {
+              setCurrentUser({
+                id: user.id,
+                email: user.email || '',
+                name: profile.name,
+                avatar: profile.avatar,
+              });
+              setCurrencyCode(profile.currencyCode || 'INR');
+              setThemePreference(profile.themePreference || 'light');
+            } else {
+              setCurrentUser({
+                id: user.id,
+                email: user.email || '',
+                name: user.email?.split('@')[0] || 'User',
+                avatar: '🦁',
+              });
+            }
+
+            // Fetch user collections
+            const [txs, cats, bdgs] = await Promise.all([
+              getTransactions(user.id),
+              getCategories(user.id),
+              getBudgets(user.id)
+            ]);
+
+            setTransactions(txs);
+            const validCats = cats.filter(c => c && c.name && c.name !== 'Unnamed Category');
+            setCategories(validCats.length > 0 ? validCats : DEFAULT_CATEGORIES);
+            setBudgets(bdgs);
+
+            if (isSupabaseLive) {
+              showNotification('Connected to cloud database.', 'success');
+            } else if (isDevSandbox) {
+              showNotification('Development Sandbox active. Data is stored only in this browser.', 'success');
+            }
+          } catch (err) {
+            console.error('Error synchronizing with Supabase:', err);
+            showNotification('Failed to sync cloud database.', 'error');
           }
-
-          // Fetch user collections
-          const [txs, cats, bdgs] = await Promise.all([
-            getTransactions(user.id),
-            getCategories(user.id),
-            getBudgets(user.id)
-          ]);
-
-          setTransactions(txs);
-          setCategories(cats.length > 0 ? cats : DEFAULT_CATEGORIES);
-          setBudgets(bdgs);
-
-          if (isSupabaseLive) {
-            showNotification('Connected to cloud database.', 'success');
-          } else if (isDevSandbox) {
-            showNotification('Development Sandbox active. Data is stored only in this browser.', 'success');
-          }
-        } catch (err) {
-          console.error('Error synchronizing with Supabase:', err);
-          showNotification('Failed to sync cloud database.', 'error');
-        }
+        })();
       } else {
         setCurrentUser(null);
         setTransactions([]);
